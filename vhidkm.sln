@@ -1,0 +1,98 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.10.35013.160
+MinimumVisualStudioVersion = 10.0.40219.1
+#
+# vhidkm solution.
+#
+# The solution groups the two kernel-mode driver projects that make
+# up the virtual HID keyboard-and-mouse stack:
+#
+#   bus\vusbbus.vcxproj    Virtual USB bus driver (root-enumerated
+#                          FDO + USB-looking child PDO).
+#   hid\vhidkm.vcxproj     HID minidriver that binds on the bus
+#                          driver's PDO and feeds hidclass.sys.
+#
+# User-mode SDK / demo projects live under user\ and are not part of
+# this solution; they compile and link against the public headers in
+# common\ and do not share build dependencies with the drivers, so
+# they are kept in a separate solution (user\vhid_user.sln) to keep
+# driver-only builds fast. Adding the user projects here is safe if
+# desired — update projectDependencies below so the user SDK does
+# not build ahead of the drivers.
+#
+# Solution Items folder surfaces the cross-cutting documentation and
+# configuration files in Solution Explorer. Those items are not
+# compiled; they are editable from inside Visual Studio for
+# convenience.
+#
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{4D5B0A1F-6FEA-4E79-8B2C-9A3C7D1E0F01}"
+	ProjectSection(SolutionItems) = preProject
+		.editorconfig = .editorconfig
+		.gitignore = .gitignore
+		README.md = README.md
+		docs\ARCHITECTURE.md = docs\ARCHITECTURE.md
+		docs\BUILD.md = docs\BUILD.md
+		docs\INSTALL.md = docs\INSTALL.md
+		docs\USAGE.md = docs\USAGE.md
+		docs\DEBUGGING.md = docs\DEBUGGING.md
+		install\install.cmd = install\install.cmd
+		install\uninstall.cmd = install\uninstall.cmd
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "common", "common", "{5E6F0B2A-71FB-4F89-9C3D-0B4E8F2A1D12}"
+	ProjectSection(SolutionItems) = preProject
+		common\vhid_guids.h = common\vhid_guids.h
+		common\vhid_ioctl.h = common\vhid_ioctl.h
+		common\vhid_protocol.h = common\vhid_protocol.h
+		common\vhid_reports.h = common\vhid_reports.h
+		common\vhid_version.h = common\vhid_version.h
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "vusbbus", "bus\vusbbus.vcxproj", "{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "vhidkm", "hid\vhidkm.vcxproj", "{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}"
+	ProjectSection(ProjectDependencies) = postProject
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61} = {A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|ARM64 = Debug|ARM64
+		Debug|x64 = Debug|x64
+		Release|ARM64 = Release|ARM64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Debug|ARM64.ActiveCfg = Debug|ARM64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Debug|ARM64.Build.0 = Debug|ARM64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Debug|ARM64.Deploy.0 = Debug|ARM64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Debug|x64.ActiveCfg = Debug|x64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Debug|x64.Build.0 = Debug|x64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Debug|x64.Deploy.0 = Debug|x64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Release|ARM64.ActiveCfg = Release|ARM64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Release|ARM64.Build.0 = Release|ARM64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Release|ARM64.Deploy.0 = Release|ARM64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Release|x64.ActiveCfg = Release|x64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Release|x64.Build.0 = Release|x64
+		{A1B2C3D4-E5F6-4789-9A0B-1C2D3E4F5A61}.Release|x64.Deploy.0 = Release|x64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Debug|ARM64.ActiveCfg = Debug|ARM64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Debug|ARM64.Build.0 = Debug|ARM64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Debug|ARM64.Deploy.0 = Debug|ARM64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Debug|x64.ActiveCfg = Debug|x64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Debug|x64.Build.0 = Debug|x64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Debug|x64.Deploy.0 = Debug|x64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Release|ARM64.ActiveCfg = Release|ARM64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Release|ARM64.Build.0 = Release|ARM64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Release|ARM64.Deploy.0 = Release|ARM64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Release|x64.ActiveCfg = Release|x64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Release|x64.Build.0 = Release|x64
+		{B2C3D4E5-F6A7-489A-AB1C-2D3E4F5A6B72}.Release|x64.Deploy.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {C3D4E5F6-A7B8-49AB-BC2D-3E4F5A6B7C83}
+	EndGlobalSection
+EndGlobal

@@ -1,0 +1,104 @@
+# EditorConfig is awesome: https://editorconfig.org
+#
+# Baseline formatting rules for every file in the vhidkm repository.
+# MSVC, Visual Studio, VS Code, Neovim, CLion, and the WDK extension
+# all honour this file. Keeping the rules centralised here means new
+# contributors get consistent formatting without per-editor setup.
+
+root = true
+
+# ---------------------------------------------------------------------------
+# Defaults — apply to every file unless overridden below.
+# ---------------------------------------------------------------------------
+[*]
+charset                  = utf-8
+end_of_line              = crlf
+insert_final_newline     = true
+trim_trailing_whitespace = true
+indent_style             = space
+indent_size              = 4
+
+# ---------------------------------------------------------------------------
+# C / C++ / H — kernel and user-mode source.
+# Matches the whitespace conventions in every checked-in .c/.h.
+# ---------------------------------------------------------------------------
+[*.{c,h,cpp,hpp,inl}]
+indent_style                     = space
+indent_size                      = 4
+tab_width                        = 4
+max_line_length                  = 110
+
+# Visual Studio-specific C++ keys. Honoured by the VS 2022 editor.
+cpp_new_line_before_open_brace_function     = new_line
+cpp_new_line_before_open_brace_block        = new_line
+cpp_new_line_before_open_brace_namespace    = new_line
+cpp_new_line_before_open_brace_type         = new_line
+cpp_new_line_before_open_brace_lambda       = same_line
+cpp_new_line_before_else                    = true
+cpp_new_line_before_catch                   = true
+cpp_new_line_before_while_in_do_while       = false
+cpp_space_before_function_open_parenthesis  = remove
+cpp_space_within_parameter_list_parentheses = false
+cpp_space_between_empty_parameter_list_parentheses = false
+
+# ---------------------------------------------------------------------------
+# INF / INX — Windows driver INF files are UTF-16 with CRLF. Stampinf
+# rejects UTF-8-BOM INX files, so we keep them UTF-8 without BOM.
+# ---------------------------------------------------------------------------
+[*.{inf,inx}]
+charset     = utf-8
+end_of_line = crlf
+indent_size = 4
+
+# ---------------------------------------------------------------------------
+# Windows batch files. CRLF is mandatory; cmd.exe mis-parses LF scripts.
+# ---------------------------------------------------------------------------
+[*.{cmd,bat}]
+end_of_line = crlf
+indent_size = 4
+
+# ---------------------------------------------------------------------------
+# MSBuild / Visual Studio project files. VS writes CRLF and two-space
+# indentation by default; match that so VS does not re-format on save.
+# ---------------------------------------------------------------------------
+[*.{sln,vcxproj,vcxproj.filters,vcxproj.user,props,targets}]
+end_of_line  = crlf
+indent_style = space
+indent_size  = 2
+
+# ---------------------------------------------------------------------------
+# Markdown — preserve trailing spaces because some Markdown flavours use
+# them for hard line breaks.
+# ---------------------------------------------------------------------------
+[*.md]
+trim_trailing_whitespace = false
+indent_size              = 2
+max_line_length          = off
+
+# ---------------------------------------------------------------------------
+# Python — follow PEP 8.
+# ---------------------------------------------------------------------------
+[*.py]
+indent_size              = 4
+max_line_length          = 100
+
+# ---------------------------------------------------------------------------
+# YAML (CI config) — two-space indent is the community norm.
+# ---------------------------------------------------------------------------
+[*.{yml,yaml}]
+indent_size = 2
+
+# ---------------------------------------------------------------------------
+# JSON — strict two-space; tabs break some parsers.
+# ---------------------------------------------------------------------------
+[*.json]
+indent_size = 2
+
+# ---------------------------------------------------------------------------
+# Makefiles must use hard tabs.
+# ---------------------------------------------------------------------------
+[Makefile]
+indent_style = tab
+
+[{makefile,GNUmakefile}]
+indent_style = tab

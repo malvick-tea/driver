@@ -1,0 +1,83 @@
+;
+; vusbbus.inx
+;
+; Source INF for the virtual USB bus driver. Post-processed by
+; Stampinf at build time to stamp DriverVer and architecture
+; decorations. Targets Windows 10 1809+ and Windows 11 on x64
+; and ARM64.
+;
+; Installation sequencing:
+;   - The bus driver is root-enumerated through `devcon install
+;     vusbbus.inf root\vusbbus`. Its hardware id is the literal
+;     ROOT\VUSBBUS; PnP matches on the [VusbBus.NT] section below.
+;   - Once the bus driver is running it creates child PDOs with
+;     hardware id USB\VID_1209&PID_BEEF&REV_0100 — matching the INF
+;     of vhidkm.sys, which PnP installs automatically.
+;
+; PnpLockdown = 1 is set so PnP refuses non-admin driver updates.
+; Class = System because a bus driver is not a user-facing device
+; class; Windows uses the System class for root-enumerated bus
+; drivers (e.g. mshwbase, pci).
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider    = %ManufacturerName%
+CatalogFile = vusbbus.cat
+DriverVer   = ; stamped by Stampinf
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+vusbbus.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName% = VusbBus,NT$ARCH$.10.0...17763
+
+[VusbBus.NT$ARCH$.10.0...17763]
+%VusbBusDeviceDesc% = VusbBus_Install, ROOT\VUSBBUS
+
+[VusbBus_Install.NT]
+CopyFiles = VusbBus_Install.CopyFiles
+
+[VusbBus_Install.NT.HW]
+AddReg = VusbBus_Install.AddReg.HW
+
+[VusbBus_Install.AddReg.HW]
+; Access control for instance-specific device objects. Matches the
+; SDDL applied to the control device so that only SYSTEM and
+; administrators can open handles against the bus FDO or its PDOs.
+HKR,,DeviceCharacteristics,0x10001,0x0100
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+[VusbBus_Install.NT.Services]
+AddService = vusbbus, 2, VusbBus_Service_Inst
+
+[VusbBus_Service_Inst]
+DisplayName   = %VusbBusServiceDesc%
+ServiceType   = 1                  ; SERVICE_KERNEL_DRIVER
+StartType     = 3                  ; SERVICE_DEMAND_START
+ErrorControl  = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\vusbbus.sys
+
+[VusbBus_Install.NT.Wdf]
+KmdfService = vusbbus, VusbBus_wdfsect
+
+[VusbBus_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[VusbBus_Install.CopyFiles]
+vusbbus.sys
+
+[Strings]
+ManufacturerName    = "Virtual HID Systems"
+DiskName            = "Virtual HID Systems Installation Disk"
+VusbBusDeviceDesc   = "Virtual USB Bus"
+VusbBusServiceDesc  = "Virtual USB Bus Service"

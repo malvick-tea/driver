@@ -1,0 +1,81 @@
+;
+; vhidkm.inx
+;
+; Source INF for the HID minidriver. Post-processed by Stampinf at
+; build time for DriverVer and $ARCH$ decorations.
+;
+; Matching strategy:
+;   The bus driver publishes a PDO with hardware ids in the form
+;   USB\VID_1209&PID_BEEF[&REV_xxxx] and compatible ids
+;   USB\Class_03&SubClass_00&Prot_00. We match the most-specific
+;   hardware id so PnP prefers us over a generic in-box HID driver.
+;
+; Class = HIDClass so hidclass.sys attaches as the upper class
+; filter automatically — that is the linchpin of the entire design:
+; we write a minidriver, PnP snaps the class driver on top, and
+; Windows gets full keyboard and mouse collections without any
+; further plumbing.
+;
+; PnpLockdown = 1 refuses non-admin driver upgrades. Test builds
+; still override this with test-signing on the target machine.
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = HIDClass
+ClassGuid   = {745A17A0-74D3-11D0-B6FE-00A0C90F57DA}
+Provider    = %ManufacturerName%
+CatalogFile = vhidkm.cat
+DriverVer   = ; stamped by Stampinf
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+vhidkm.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName% = Vhidkm,NT$ARCH$.10.0...17763
+
+[Vhidkm.NT$ARCH$.10.0...17763]
+%VhidkmDeviceDesc% = Vhidkm_Install, USB\VID_1209&PID_BEEF&REV_0100
+%VhidkmDeviceDesc% = Vhidkm_Install, USB\VID_1209&PID_BEEF
+
+[Vhidkm_Install.NT]
+CopyFiles = Vhidkm_Install.CopyFiles
+
+[Vhidkm_Install.NT.HW]
+AddReg = Vhidkm_Install.AddReg.HW
+
+[Vhidkm_Install.AddReg.HW]
+HKR,,DeviceCharacteristics,0x10001,0x0100
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+
+[Vhidkm_Install.NT.Services]
+AddService = vhidkm, 2, Vhidkm_Service_Inst
+
+[Vhidkm_Service_Inst]
+DisplayName   = %VhidkmServiceDesc%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %13%\vhidkm.sys
+
+[Vhidkm_Install.NT.Wdf]
+KmdfService = vhidkm, Vhidkm_wdfsect
+
+[Vhidkm_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Vhidkm_Install.CopyFiles]
+vhidkm.sys
+
+[Strings]
+ManufacturerName   = "Virtual HID Systems"
+DiskName           = "Virtual HID Systems Installation Disk"
+VhidkmDeviceDesc   = "Virtual HID Keyboard + Mouse"
+VhidkmServiceDesc  = "Virtual HID Keyboard + Mouse Service"

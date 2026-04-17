@@ -1,0 +1,202 @@
+# =============================================================================
+#  .gitignore for the vhidkm driver stack.
+#
+#  Covers Visual Studio 2022, WDK, KMDF, the user-mode SDK, the Python
+#  wrapper, and local test certificates. Organised by concern so a
+#  reviewer can quickly see why each pattern is excluded.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Build outputs
+# -----------------------------------------------------------------------------
+/.dist/
+/out/
+/bin/
+/obj/
+[Dd]ebug/
+[Rr]elease/
+[Dd]ebug_*/
+[Rr]elease_*/
+x64/
+ARM64/
+ARM/
+Win32/
+
+# Per-project intermediate directories. Visual Studio places these under
+# the project folder even when an absolute IntDir is set, because
+# tracewpp writes its output relative to the vcxproj location.
+**/Generated Files/
+**/*.tmh
+**/tmh/
+
+# -----------------------------------------------------------------------------
+# Visual Studio per-user / per-workspace state
+# -----------------------------------------------------------------------------
+*.vcxproj.user
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.sln.ide/
+.vs/
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+*.ipch
+ipch/
+
+# CMake scratch if a contributor runs cmake locally (the canonical build
+# system is MSBuild; cmake is not part of the shipping surface).
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CMakeScripts/
+CTestTestfile.cmake
+Testing/
+
+# -----------------------------------------------------------------------------
+# Compiler and linker byproducts
+# -----------------------------------------------------------------------------
+*.obj
+*.o
+*.iobj
+*.ipdb
+*.pch
+*.res
+*.exp
+*.idb
+*.rsp
+*.lastbuildstate
+*.unsuccessfulbuild
+*.tlog
+*.log
+*.vspx
+*.vssscc
+*.vspscc
+*.cache
+
+# Debug artefacts. PDBs are kept out of the tree because they embed
+# absolute paths from the build machine; pipelines publish them as
+# build artefacts instead.
+*.pdb
+*.ilk
+*.map
+*.iobj
+
+# NB: .sys / .dll / .lib / .exe / .cat are kept out of source control.
+# Download them from CI artefacts or rebuild locally.
+*.sys
+*.dll
+*.lib
+*.exe
+*.cat
+*.cab
+
+# -----------------------------------------------------------------------------
+# WDK / Stampinf / Inf2Cat byproducts
+# -----------------------------------------------------------------------------
+# Generated INF (the canonical source is the .inx).
+**/[Oo]utput/*.inf
+**/Package/
+**/DriverPackage/
+
+# Security-catalog files emitted by inf2cat.
+*.cat.temp
+*.security
+*.cer.temp
+
+# SDV (Static Driver Verifier) working state.
+**/sdv/
+**/smvbuild.log
+**/smvstats.txt
+**/VC/sdv/
+**/VC/SmvLib.xml
+*.sdv
+*.sdv-meta
+
+# CA (Code Analysis / PREfast) scratch.
+*.nativecodeanalysis.xml
+
+# -----------------------------------------------------------------------------
+# Test certificates and signing material.
+#
+# The directory is tracked; its contents are not. Every developer
+# generates their own per-host certificate to avoid sharing private
+# keys (see docs/BUILD.md §2.1).
+# -----------------------------------------------------------------------------
+/install/test-cert/*
+!/install/test-cert/.gitkeep
+
+# Anywhere else in the tree, drop private keys and unencrypted pfx.
+*.pfx
+*.p12
+*.pvk
+*.snk
+*.cer
+*.p7b
+
+# -----------------------------------------------------------------------------
+# User-mode SDK byproducts
+# -----------------------------------------------------------------------------
+# C SDK is built from user/*.vcxproj; intermediate state belongs to
+# the global out/ directory above. Nothing extra here at the moment.
+
+# Python wrapper
+__pycache__/
+*.py[co]
+*.pyd
+*.pyo
+.venv/
+venv/
+env/
+.eggs/
+*.egg-info/
+*.egg
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# -----------------------------------------------------------------------------
+# Editor / IDE scratch
+# -----------------------------------------------------------------------------
+*.swp
+*.swo
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json.default
+*.code-workspace
+.idea/
+*.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# -----------------------------------------------------------------------------
+# Crashdumps and live-kernel-report files. These are large and contain
+# raw memory contents — never commit them, even from test VMs.
+# -----------------------------------------------------------------------------
+*.dmp
+*.mdmp
+*.hdmp
+*.wer
+LiveKernelReports/
+Minidump/
+MEMORY.DMP
+WER*.hdmp
+
+# -----------------------------------------------------------------------------
+# Tracelog / ETL captures produced by the debugging workflows
+# documented in docs/DEBUGGING.md.
+# -----------------------------------------------------------------------------
+*.etl
+*.evtx
+
+# -----------------------------------------------------------------------------
+# Packaging / publishing scratch
+# -----------------------------------------------------------------------------
+/publish/
+/deploy/
+*.nupkg
+*.appxbundle
+*.appxupload
