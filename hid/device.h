@@ -74,8 +74,10 @@ struct _VHIDKM_DEVICE_CONTEXT {
     /*
      * Pending IOCTL_HID_READ_REPORT IRPs from hidclass.sys. Dispatch
      * mode is Manual; completions happen in report_queue.c when new
-     * input reports arrive. Power-managed = FALSE because we want
-     * cancellation handling to survive idle transitions.
+     * input reports arrive. Power-managed = TRUE so KMDF pauses the
+     * queue across D-state transitions and cancels the parked read on
+     * the way to D3Final, matching how hidclass expects a HID device to
+     * behave during low-power transitions.
      */
     WDFQUEUE            InputReportQueue;
 

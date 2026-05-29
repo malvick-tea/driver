@@ -34,4 +34,21 @@ VusbBusUsbDescCopy(
     _Out_ PULONG BytesReturned
     );
 
+/*
+ * Build USB string descriptor index 3 (iSerialNumber) from a
+ * per-instance serial. Serial need not be null-terminated; SerialChars
+ * gives the populated length. When SerialChars is 0 (or Serial is NULL)
+ * the fixed default serial string is emitted instead, so the device
+ * always presents a non-empty serial.
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS
+VusbBusUsbDescCopySerialString(
+    _In_reads_opt_(SerialChars) const WCHAR* Serial,
+    _In_  ULONG SerialChars,
+    _Out_writes_bytes_to_(BufferLength, *BytesReturned) PVOID Buffer,
+    _In_  ULONG BufferLength,
+    _Out_ PULONG BytesReturned
+    );
+
 #endif /* VHID_BUS_USBDESC_H_ */

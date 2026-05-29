@@ -33,8 +33,9 @@
 /*
  * Maximum value accepted for the HoldMs field of
  * VHID_KEYSTROKE_REQ. Values above this clamp down on submit.
- * Bound chosen so one caller cannot park a KMDF timer worker
- * indefinitely; five seconds is far longer than any human keystroke.
+ * The keystroke IOCTL holds the requesting thread for the duration;
+ * this bound keeps that synchronous wait short (five seconds is far
+ * longer than any human keystroke).
  */
 #define VHID_KEYSTROKE_HOLD_MAX_MS   5000u
 

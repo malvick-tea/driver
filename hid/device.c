@@ -13,10 +13,10 @@
  *           ├─ WDF_FILEOBJECT_CONFIG_INIT (no-op callbacks — the FDO
  *           │  accepts no user handles directly; user-mode talks to the
  *           │  control device)
- *           ├─ hidclass.sys registration via HidRegisterMinidriver
- *           │  after WdfDeviceCreate — this attaches hidclass.sys as
- *           │  an upper-filter and routes HID-internal IOCTLs to our
- *           │  default queue
+ *           ├─ hidclass.sys is layered on by the mshidkmdf shim, which
+ *           │  the INF wires as a lower filter on this FDO; mshidkmdf
+ *           │  routes the HID class protocol into the HID-internal
+ *           │  IOCTLs serviced on our default queue
  *           ├─ Default IO queue -> hid_ioctls.c
  *           ├─ Manual pending-read queue (report_queue.c)
  *           ├─ Manual LED-wait queue
@@ -29,10 +29,10 @@
  *     cause HidpRegisterMinidriver to reject us).
  *   - We must not set DO_BUFFERED_IO or DO_DIRECT_IO on the FDO;
  *     hidclass.sys manages the I/O method per IOCTL.
- *   - The minidriver registration is done by HidRegisterMinidriver
- *     AFTER WdfDeviceCreate returns so the DEVICE_OBJECT exists. The
- *     framework's WdfDeviceInitSetIoType set to neither keeps the
- *     FDO flags in the shape hidclass.sys expects.
+ *   - This is a KMDF minidriver: hidclass.sys is layered on through the
+ *     mshidkmdf lower-filter shim declared in the INF, not through a
+ *     HidRegisterMinidriver call. WdfDeviceInitSetIoType is left in the
+ *     shape hidclass.sys / mshidkmdf expect.
  */
 
 #include "driver.h"
@@ -213,29 +213,16 @@ VhidkmDeviceCreate(
     }
 
     /*
-     * Register as a HID minidriver. HidRegisterMinidriver hooks
-     * hidclass.sys above the FDO by adjusting the major-function
-     * table of our driver object; all HID-internal IOCTLs begin
-     * arriving on the default queue after this call returns.
-     *
-     * The DriverExtension field carries per-instance state that
-     * hidclass.sys passes back to us in callbacks. We park a pointer
-     * to our WDFDEVICE there so handlers can recover the context
-     * from the raw DEVICE_OBJECT.
+     * No HidRegisterMinidriver call here: this is a KMDF HID minidriver,
+     * not a WDM one. hidclass.sys is brought in by the in-box mshidkmdf.sys
+     * shim, which the INF wires as a lower filter on this FDO (see
+     * hid/vhidkm.inx). mshidkmdf registers the minidriver with hidclass on
+     * our behalf and translates the HID class protocol into the
+     * HID-internal IOCTLs our default queue already services (see
+     * hid/hid_ioctls.c). No per-instance HID extension state is required;
+     * each callback recovers our context from the WDFDEVICE through the
+     * framework.
      */
-    {
-        HID_DEVICE_EXTENSION* hidExt;
-        hidExt = GET_MINIDRIVER_DEVICE_EXTENSION(devCtx->WdmDeviceObject);
-        UNREFERENCED_PARAMETER(hidExt);
-        /*
-         * No per-instance extension state needs to be stored: the
-         * HID_DEVICE_EXTENSION carries PhysicalDeviceObject and
-         * NextDeviceObject which hidclass.sys fills in automatically
-         * after registration. We reach our context through
-         * WdfWdmDeviceGetWdfDeviceHandle on the WDM FDO whenever a
-         * callback arrives.
-         */
-    }
 
     /*
      * The control device is created by the first FDO to reach this
@@ -380,6 +367,13 @@ VhidkmEvtDeviceSelfManagedIoCleanup(
 
     TracePnp("SelfManagedIoCleanup");
     /*
+     * Stop new control-device IOCTLs from resolving to this FDO before
+     * we drain: detach clears the singleton control device's backpointer
+     * if it still names us. Requests already in flight hold a reference
+     * on this WDFDEVICE and remain memory-safe until they complete.
+     */
+    VhidkmCtlDetachDevice(ctx);
+    /*
      * Final chance to complete any waiter queued by a control-device
      * handle before cleanup runs for the control device. Safe to
      * call repeatedly; the queues tolerate empty drains.
@@ -412,8 +406,20 @@ VhidkmEvtDeviceContextCleanup(
     WDFOBJECT Object
     )
 {
-    UNREFERENCED_PARAMETER(Object);
+    PVHIDKM_DEVICE_CONTEXT ctx = VhidkmDeviceGetContext((WDFDEVICE)Object);
+
     TracePnp("device context cleanup");
+
+    /*
+     * Belt-and-suspenders detach for teardown paths that skip
+     * SelfManagedIoCleanup (e.g. a device that failed PrepareHardware
+     * after the control device was already bound). Idempotent: only
+     * clears the backpointer if it still names this FDO. This runs
+     * before the context memory is freed, so no later IOCTL can observe
+     * a dangling pointer.
+     */
+    VhidkmCtlDetachDevice(ctx);
+
     /*
      * All queues, spinlocks, and the ring buffer live inside the
      * device context or as KMDF children of the device; KMDF frees

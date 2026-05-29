@@ -10,11 +10,11 @@
 ;   USB\Class_03&SubClass_00&Prot_00. We match the most-specific
 ;   hardware id so PnP prefers us over a generic in-box HID driver.
 ;
-; Class = HIDClass so hidclass.sys attaches as the upper class
-; filter automatically — that is the linchpin of the entire design:
-; we write a minidriver, PnP snaps the class driver on top, and
-; Windows gets full keyboard and mouse collections without any
-; further plumbing.
+; Class = HIDClass, but that alone does NOT attach hidclass.sys. This
+; is a KMDF HID minidriver, so the in-box mshidkmdf.sys shim is wired as
+; a lower filter (see LowerFilters below); mshidkmdf registers the
+; minidriver with hidclass.sys, which then layers on top and fans the
+; device out into the keyboard and mouse collections.
 ;
 ; PnpLockdown = 1 refuses non-admin driver upgrades. Test builds
 ; still override this with test-signing on the target machine.
@@ -54,9 +54,14 @@ AddReg = Vhidkm_Install.AddReg.HW
 [Vhidkm_Install.AddReg.HW]
 HKR,,DeviceCharacteristics,0x10001,0x0100
 HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+; mshidkmdf.sys is the in-box "Pass-through HID to KMDF" shim. Wiring it
+; as a lower filter is what brings hidclass.sys onto this KMDF
+; minidriver's FDO; Class=HIDClass by itself does not attach hidclass.
+HKR,,"LowerFilters",0x00010000,"mshidkmdf"
 
 [Vhidkm_Install.NT.Services]
 AddService = vhidkm, 2, Vhidkm_Service_Inst
+AddService = mshidkmdf, , mshidkmdf_Service_Inst
 
 [Vhidkm_Service_Inst]
 DisplayName   = %VhidkmServiceDesc%
@@ -64,6 +69,15 @@ ServiceType   = 1
 StartType     = 3
 ErrorControl  = 1
 ServiceBinary = %13%\vhidkm.sys
+
+; In-box shim that bridges hidclass.sys to this KMDF minidriver. It is
+; not copied by this package; the binary already ships with Windows in
+; %SystemRoot%\System32\drivers (%12%).
+[mshidkmdf_Service_Inst]
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %12%\mshidkmdf.sys
 
 [Vhidkm_Install.NT.Wdf]
 KmdfService = vhidkm, Vhidkm_wdfsect

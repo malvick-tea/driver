@@ -5,10 +5,16 @@
  * interface to vhidkm.sys and to user-mode for diagnostic purposes
  * via IOCTL_VUSBBUS_GET_USB_DESCRIPTOR.
  *
- * Descriptor layout matches docs/ARCHITECTURE.md §5. The table is
- * not transmitted over a wire (there is no wire) but it is the
+ * Descriptor layout matches docs/ARCHITECTURE.md section 5. The table
+ * is not transmitted over a wire (there is no wire) but it is the
  * single source of truth for fields the HID minidriver returns
  * through IOCTL_HID_GET_DEVICE_ATTRIBUTES / GET_STRING.
+ *
+ * The string-descriptor path has two entry points: VusbBusUsbDescCopy
+ * serves the compile-time-constant strings (manufacturer, product, and
+ * a fixed default serial) for the diagnostic IOCTL that has no device
+ * context, while VusbBusUsbDescCopySerialString builds string index 3
+ * from a per-instance serial supplied by the caller.
  */
 
 #include "driver.h"
@@ -18,20 +24,28 @@
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, VusbBusUsbDescCopy)
+#pragma alloc_text(PAGE, VusbBusUsbDescCopySerialString)
 #endif
 
 /*
- * The report descriptor itself lives in hid/hid_descriptor.c; only
- * its size is referenced here (embedded in the HID class
- * descriptor's wReportDescLength). We keep the size as a compile-
- * time constant so both drivers agree without a build-time linker
- * symbol exchange.
+ * The report descriptor itself lives in hid/hid_descriptor.c; only its
+ * size is referenced here (embedded in the HID class descriptor's
+ * wReportDescLength). We keep the size as a compile-time constant so
+ * both drivers agree without a build-time linker symbol exchange.
  */
 #define VHID_REPORT_DESCRIPTOR_SIZE 175u
 
+/*
+ * Largest payload a USB string descriptor can carry: bLength is a
+ * single byte, so total bytes <= 255, leaving 253 for the payload.
+ * Round down to a whole number of UTF-16 code units so a truncated
+ * descriptor never ends on half a WCHAR.
+ */
+#define USB_STRING_MAX_PAYLOAD_BYTES  (((0xFFu - 2u)) & ~1u)
+
 #include <pshpack1.h>
 
-/* --- Device descriptor (18 bytes) --- */
+/* Device descriptor (18 bytes). */
 static const UCHAR g_DeviceDescriptor[] = {
     0x12,                       /* bLength            */
     0x01,                       /* bDescriptorType    = DEVICE */
@@ -49,7 +63,7 @@ static const UCHAR g_DeviceDescriptor[] = {
     0x01                        /* bNumConfigurations = 1      */
 };
 
-/* --- Config + Interface + HID + Endpoint (34 bytes) --- */
+/* Config + Interface + HID + Endpoint (34 bytes). */
 static const UCHAR g_ConfigurationDescriptor[] = {
     /* Configuration */
     0x09, 0x02, 0x22, 0x00, 0x01, 0x01, 0x00, 0xA0, 0x32,
@@ -63,24 +77,23 @@ static const UCHAR g_ConfigurationDescriptor[] = {
     0x07, 0x05, 0x81, 0x03, 0x40, 0x00, 0x01
 };
 
-/* --- Just the HID class descriptor (9 bytes) --- */
+/* Just the HID class descriptor (9 bytes). */
 static const UCHAR g_HidClassDescriptor[] = {
     0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22,
     (UCHAR)(VHID_REPORT_DESCRIPTOR_SIZE & 0xFF),
     (UCHAR)((VHID_REPORT_DESCRIPTOR_SIZE >> 8) & 0xFF)
 };
 
-/* --- String descriptors --- */
-/* String 0 — LangID array (en-US, 0x0409) */
+/* String 0 - LangID array (en-US, 0x0409). */
 static const UCHAR g_String0[] = {
     0x04, 0x03, 0x09, 0x04
 };
 
 /*
- * Strings 1..3 are materialized on demand — the manufacturer and
+ * Strings 1..3 are materialized on demand. The manufacturer and
  * product strings are compile-time constants; the serial string is
- * derived per-instance. The helper constructs the 2-byte header +
- * UTF-16LE payload at copy time.
+ * either a per-instance value or this fixed default. The helper
+ * constructs the 2-byte header + UTF-16LE payload at copy time.
  */
 static const WCHAR g_Str1[] = VHID_DEFAULT_MFG_STRING_W;
 static const WCHAR g_Str2[] = VHID_DEFAULT_PRODUCT_STRING_W;
@@ -128,14 +141,19 @@ CopyStringDescriptor(
 {
     UCHAR   header[2];
     ULONG   payloadBytes = WideLength * sizeof(WCHAR);
-    ULONG   totalBytes   = payloadBytes + sizeof(header);
+    ULONG   totalBytes;
     PUCHAR  out          = (PUCHAR)Dst;
 
-    if (totalBytes > 0xFF) {
-        /* String descriptors carry an 8-bit length; truncate. */
-        payloadBytes = 0xFF - sizeof(header);
-        totalBytes   = 0xFF;
+    *Returned = 0;
+
+    if (payloadBytes > USB_STRING_MAX_PAYLOAD_BYTES) {
+        /*
+         * bLength is 8-bit; truncate, but keep the payload a whole
+         * number of UTF-16 code units so we never emit half a WCHAR.
+         */
+        payloadBytes = USB_STRING_MAX_PAYLOAD_BYTES;
     }
+    totalBytes = payloadBytes + sizeof(header);
 
     if (DstLength < totalBytes) {
         *Returned = totalBytes;
@@ -204,16 +222,46 @@ VusbBusUsbDescCopy(
 
     case USB_DESC_TYPE_REPORT:
         /*
-         * The report descriptor lives with the HID minidriver. The
-         * bus driver does not serve it directly; callers that need
-         * it go through IOCTL_HID_GET_REPORT_DESCRIPTOR on the HID
-         * side. We surface STATUS_NOT_SUPPORTED here rather than
-         * NOT_FOUND because the descriptor exists — just not at
-         * this layer.
+         * The report descriptor lives with the HID minidriver. The bus
+         * driver does not serve it directly; callers that need it go
+         * through IOCTL_HID_GET_REPORT_DESCRIPTOR on the HID side. We
+         * surface STATUS_NOT_SUPPORTED here rather than NOT_FOUND
+         * because the descriptor exists, just not at this layer.
          */
         return STATUS_NOT_SUPPORTED;
 
     default:
         return STATUS_INVALID_PARAMETER;
     }
+}
+
+_Use_decl_annotations_
+NTSTATUS
+VusbBusUsbDescCopySerialString(
+    const WCHAR* Serial,
+    ULONG        SerialChars,
+    PVOID        Buffer,
+    ULONG        BufferLength,
+    PULONG       BytesReturned
+    )
+{
+    PAGED_CODE();
+
+    if (Buffer == NULL || BytesReturned == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *BytesReturned = 0;
+
+    /*
+     * No per-instance serial: fall back to the fixed default so the
+     * device always presents a non-empty iSerialNumber string.
+     */
+    if (Serial == NULL || SerialChars == 0) {
+        return CopyStringDescriptor(g_Str3_default,
+            (ULONG)(RTL_NUMBER_OF(g_Str3_default) - 1),
+            Buffer, BufferLength, BytesReturned);
+    }
+
+    return CopyStringDescriptor(Serial, SerialChars,
+                                Buffer, BufferLength, BytesReturned);
 }

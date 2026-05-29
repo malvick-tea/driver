@@ -4,15 +4,20 @@
  * Declarations for the virtual USB child PDO.
  *
  * Each PDO carries:
- *   - A backpointer to its VUSBBUS_SLOT entry (so cleanup can mark
- *     the slot free when the device is removed).
+ *   - Its own framework handle, captured at creation, so the published
+ *     IPC interface reference/dereference callbacks act on a stable
+ *     object rather than the mutable slot table entry.
+ *   - A backpointer to its VUSBBUS_SLOT entry (so cleanup can mark the
+ *     slot free when the device is removed).
+ *   - A captured copy of the per-instance serial used to answer
+ *     iSerialNumber over the IPC descriptor path without touching the
+ *     slot.
  *   - Published bus IPC state (function-ready flag, LED baseline,
  *     bound HID FDO pointer, spinlock).
- *   - Identification strings used by IRP_MN_QUERY_ID.
  *
- * PDOs are fully KMDF-managed (no raw IoCreateDevice); the
- * non-trivial WDM IRPs (QUERY_INTERFACE for our published bus IPC,
- * QUERY_CAPABILITIES tweaks) are wired via WdfDeviceInitAssignWdmIrpPreprocessCallback.
+ * PDOs are fully KMDF-managed (no raw IoCreateDevice); the non-trivial
+ * WDM IRPs (QUERY_INTERFACE for our published bus IPC) are wired via
+ * WdfDeviceInitAssignWdmIrpPreprocessCallback.
  */
 
 #pragma once
@@ -23,15 +28,32 @@
 #include "fdo.h"
 
 struct _VUSBBUS_PDO_CONTEXT {
+    /*
+     * This PDO's own framework handle, captured at creation. The IPC
+     * interface reference/dereference callbacks ref/deref THIS handle
+     * rather than chasing Slot->PdoDevice, which the unplug path zeroes
+     * and a subsequent plug may recycle to a different device.
+     */
+    WDFDEVICE          Pdo;
+
     /* Backpointer to the owning slot (cleared by cleanup). */
     PVUSBBUS_SLOT      Slot;
     PVUSBBUS_FDO_CONTEXT FdoCtx;
 
     /*
+     * Per-instance serial captured at creation so the published IPC
+     * descriptor path can serve iSerialNumber without dereferencing the
+     * mutable slot. Not guaranteed null-terminated; SerialChars records
+     * the populated length (0 means "use the default serial string").
+     */
+    WCHAR              Serial[32];
+    ULONG              SerialChars;
+
+    /*
      * Serializes access to FunctionReady, HidFdo, LedBaseline,
      * LedWaiters. Acquired at DISPATCH_LEVEL by LED propagation,
-     * PASSIVE_LEVEL by PnP / IPC setup. A spinlock suffices —
-     * none of the critical sections wait on anything external.
+     * PASSIVE_LEVEL by PnP / IPC setup. A spinlock suffices -- none of
+     * the critical sections wait on anything external.
      */
     WDFSPINLOCK        IpcLock;
 

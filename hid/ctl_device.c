@@ -3,20 +3,34 @@
  *
  * Control-device construction + file-object lifecycle for vhidkm.sys.
  *
- * Creation pattern mirrors the bus driver's ctl_device.c: allocate
- * DEVICE_INIT via WdfControlDeviceInitAllocate, apply SDDL via
- * WdfDeviceInitAssignSDDLString, attach a WDF_FILEOBJECT_CONFIG so
- * each open file gets per-handle context (screen metrics), create
- * the device, publish the interface GUID, wire up the IO queue,
- * and finally WdfControlFinishInitializing.
+ * The control device is a standalone WDFDEVICE (not tied to the PnP
+ * tree) through which user-mode issues IOCTL_VHIDKM_* -- input
+ * injection, LED readback, screen metrics. It carries an SDDL string
+ * restricting open to SYSTEM and BUILTIN\Administrators and publishes
+ * GUID_DEVINTERFACE_VHIDKM_CTL.
  *
- * Thread-safety of the once-flag:
- *   Two concurrent FDOs racing to create the control device would
- *   otherwise each try to claim \Device\VhidkmCtl and the second
- *   would fail with STATUS_OBJECT_NAME_COLLISION. Serialization is
- *   achieved with a driver-wide WDFWAITLOCK and a BOOLEAN created
- *   lazily on first call. The lock is allocated alongside the
- *   driver object so its lifetime matches the driver.
+ * Lifetime model:
+ *   The control device is a driver-wide singleton created lazily by the
+ *   first FDO to reach EvtDeviceAdd and torn down only when the driver
+ *   unloads. Each FDO that comes up rebinds the control device's
+ *   backpointer to its own context; each FDO that tears down clears that
+ *   backpointer (VhidkmCtlDetachDevice) so a request arriving after the
+ *   FDO is gone cannot dereference a freed context.
+ *
+ *   Because the control device can outlive the FDO whose context it
+ *   points at, every reader resolves the backpointer under
+ *   VHIDKM_CTL_DEV_CONTEXT.Lock and takes a reference on the FDO's
+ *   WDFDEVICE for the duration of its work (VhidkmCtlAcquireDevice /
+ *   VhidkmCtlReleaseDevice). Holding that reference keeps the FDO
+ *   context and its child queues allocated even if a concurrent unplug
+ *   removes the device mid-IOCTL.
+ *
+ * Initialization race:
+ *   Construction is elected with a four-state flag (uninit / building /
+ *   ready / failed). The single winning thread builds; losers either
+ *   attach to the finished device (ready) or surface the builder's
+ *   failure (failed) -- they never read g_CtlDevice while it is still
+ *   NULL.
  */
 
 #include "driver.h"
@@ -26,8 +40,14 @@
 #include "trace.h"
 #include "ctl_device.tmh"
 
+_IRQL_requires_(PASSIVE_LEVEL)
+static NTSTATUS VhidkmCtlBuildAndPublish(
+    _In_ WDFDEVICE AssociatedFdo,
+    _In_ struct _VHIDKM_DEVICE_CONTEXT* DevCtx);
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(PAGE, VhidkmCtlDeviceCreateOnce)
+#pragma alloc_text(PAGE, VhidkmCtlBuildAndPublish)
 #pragma alloc_text(PAGE, VhidkmCtlEvtFileCreate)
 #pragma alloc_text(PAGE, VhidkmCtlEvtFileCleanup)
 #pragma alloc_text(PAGE, VhidkmCtlEvtFileClose)
@@ -40,26 +60,44 @@ EVT_WDF_DEVICE_FILE_CREATE VhidkmCtlEvtFileCreate;
 EVT_WDF_FILE_CLEANUP       VhidkmCtlEvtFileCleanup;
 EVT_WDF_FILE_CLOSE         VhidkmCtlEvtFileClose;
 
-/*
- * Driver-wide once-flag + lock. Allocated once in
- * VhidkmCtlDeviceCreateOnce by a double-checked pattern. We cannot
- * use InterlockedCompareExchange on a HANDLE because WDFWAITLOCK is
- * opaque and its creation is not atomic; instead, we protect the
- * flag with a global spinlock since KMDF does not yet provide a
- * "create-lock-once" primitive at driver scope.
- */
+/* Construction-election states for g_CtlInitState. */
+#define CTL_STATE_UNINIT    0
+#define CTL_STATE_BUILDING  1
+#define CTL_STATE_READY     2
+#define CTL_STATE_FAILED    3
 
 /*
- * The control device and its wait-lock are kept in driver-context
- * variables. We keep them as file-scope statics because WDFDRIVER
- * context allocation is out of scope for this compilation unit and
- * a small number of process-wide, driver-lifetime statics is the
- * canonical pattern for control-device singletons (used by the
- * WDK KMDF samples such as `toaster`, `osrusbfx2`, and the
- * in-box HID minidrivers).
+ * Driver-lifetime singleton state. g_CtlDevice is published only after
+ * g_CtlInitState transitions to CTL_STATE_READY; readers must observe
+ * READY before touching g_CtlDevice.
  */
-static volatile LONG    g_CtlInitOnce = 0;
-static WDFDEVICE        g_CtlDevice   = NULL;
+static volatile LONG    g_CtlInitState = CTL_STATE_UNINIT;
+static WDFDEVICE        g_CtlDevice    = NULL;
+
+/*
+ * Atomic read of the init state that never mutates a non-zero value.
+ * (CompareExchange of UNINIT->UNINIT is a no-op write when the value is
+ * already UNINIT and leaves any other value untouched.)
+ */
+static LONG VhidkmCtlReadState(void)
+{
+    return InterlockedCompareExchange(&g_CtlInitState,
+                                      CTL_STATE_UNINIT, CTL_STATE_UNINIT);
+}
+
+/* Rebind the singleton control device to a (re)started FDO. */
+_IRQL_requires_max_(DISPATCH_LEVEL)
+static NTSTATUS VhidkmCtlAttachDevice(_In_ struct _VHIDKM_DEVICE_CONTEXT* DevCtx)
+{
+    PVHIDKM_CTL_DEV_CONTEXT devCtxOnCtl = VhidkmCtlDevGetContext(g_CtlDevice);
+
+    WdfSpinLockAcquire(devCtxOnCtl->Lock);
+    devCtxOnCtl->DevCtx = DevCtx;
+    WdfSpinLockRelease(devCtxOnCtl->Lock);
+
+    DevCtx->ControlDevice = g_CtlDevice;
+    return STATUS_SUCCESS;
+}
 
 _Use_decl_annotations_
 NTSTATUS
@@ -68,70 +106,96 @@ VhidkmCtlDeviceCreateOnce(
     struct _VHIDKM_DEVICE_CONTEXT*   DevCtx
     )
 {
+    PAGED_CODE();
+
+    for (;;) {
+        LONG prev = InterlockedCompareExchange(&g_CtlInitState,
+                                               CTL_STATE_BUILDING,
+                                               CTL_STATE_UNINIT);
+
+        if (prev == CTL_STATE_FAILED) {
+            /*
+             * A previous attempt failed. Try to claim a fresh build; if
+             * we win, proceed as the builder, otherwise fall through and
+             * wait for whoever did.
+             */
+            if (InterlockedCompareExchange(&g_CtlInitState,
+                                           CTL_STATE_BUILDING,
+                                           CTL_STATE_FAILED) == CTL_STATE_FAILED) {
+                prev = CTL_STATE_UNINIT;
+            } else {
+                prev = CTL_STATE_BUILDING;
+            }
+        }
+
+        if (prev == CTL_STATE_UNINIT) {
+            NTSTATUS status = VhidkmCtlBuildAndPublish(AssociatedFdo, DevCtx);
+            InterlockedExchange(&g_CtlInitState,
+                                NT_SUCCESS(status) ? CTL_STATE_READY
+                                                   : CTL_STATE_FAILED);
+            if (NT_SUCCESS(status)) {
+                TracePnp("control device created, interface published");
+            } else {
+                TraceError("control device creation failed %!STATUS!", status);
+            }
+            return status;
+        }
+
+        if (prev == CTL_STATE_READY) {
+            return VhidkmCtlAttachDevice(DevCtx);
+        }
+
+        /*
+         * prev == CTL_STATE_BUILDING: another thread is constructing the
+         * device. Poll until it settles, then loop to act on the result.
+         * Construction is short and this path is only reachable when more
+         * than one FDO races (VHID_MAX_SLOTS > 1).
+         */
+        {
+            LARGE_INTEGER interval;
+            interval.QuadPart = -10 * 1000; /* 1 ms, relative */
+            while (VhidkmCtlReadState() == CTL_STATE_BUILDING) {
+                (VOID)KeDelayExecutionThread(KernelMode, FALSE, &interval);
+            }
+        }
+    }
+}
+
+_Use_decl_annotations_
+static NTSTATUS
+VhidkmCtlBuildAndPublish(
+    WDFDEVICE                        AssociatedFdo,
+    struct _VHIDKM_DEVICE_CONTEXT*   DevCtx
+    )
+{
     PWDFDEVICE_INIT         devInit = NULL;
-    WDFDEVICE               ctlDevice;
+    WDFDEVICE               ctlDevice = NULL;
     WDF_OBJECT_ATTRIBUTES   fileAttr;
     WDF_FILEOBJECT_CONFIG   fileCfg;
     WDF_OBJECT_ATTRIBUTES   devAttr;
+    WDF_OBJECT_ATTRIBUTES   lockAttr;
     PVHIDKM_CTL_DEV_CONTEXT devCtxOnCtl;
     NTSTATUS                status;
-    LONG                    prev;
 
     PAGED_CODE();
-
-    UNREFERENCED_PARAMETER(AssociatedFdo);
-
-    /*
-     * Fast path: another caller already finished construction.
-     * Backfill the DevCtx pointer so this FDO also appears at the
-     * control device's dispatch layer.
-     */
-    prev = InterlockedCompareExchange(&g_CtlInitOnce, 1, 0);
-    if (prev == 2) {
-        /* Already fully initialized. Rewire DevCtx pointer. */
-        devCtxOnCtl = VhidkmCtlDevGetContext(g_CtlDevice);
-        devCtxOnCtl->DevCtx = DevCtx;
-        DevCtx->ControlDevice = g_CtlDevice;
-        return STATUS_SUCCESS;
-    }
-    if (prev == 1) {
-        /*
-         * Another thread is actively building the control device.
-         * Yield briefly by reading the once-flag in a polling loop;
-         * the construction path is short (a few hundred micro-
-         * seconds) and polling at PASSIVE_LEVEL is acceptable here.
-         */
-        LARGE_INTEGER interval = { .QuadPart = -10 * 1000 };
-        while (InterlockedCompareExchange(&g_CtlInitOnce,
-                                          g_CtlInitOnce, 0) == 1) {
-            (VOID)KeDelayExecutionThread(KernelMode, FALSE, &interval);
-        }
-        devCtxOnCtl = VhidkmCtlDevGetContext(g_CtlDevice);
-        devCtxOnCtl->DevCtx = DevCtx;
-        DevCtx->ControlDevice = g_CtlDevice;
-        return STATUS_SUCCESS;
-    }
-
-    /* We won the race and are responsible for construction. */
 
     devInit = WdfControlDeviceInitAllocate(
         WdfDeviceGetDriver(AssociatedFdo),
         &SDDL_DEVOBJ_SYS_ALL_ADM_ALL);
     if (devInit == NULL) {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto done;
+        return STATUS_INSUFFICIENT_RESOURCES;
     }
 
     status = WdfDeviceInitAssignSDDLString(devInit, &g_CtlDeviceSddl);
     if (!NT_SUCCESS(status)) {
         WdfDeviceInitFree(devInit);
-        goto done;
+        return status;
     }
 
     status = WdfDeviceInitAssignName(devInit, &g_CtlDeviceName);
     if (!NT_SUCCESS(status)) {
         WdfDeviceInitFree(devInit);
-        goto done;
+        return status;
     }
 
     WdfDeviceInitSetDeviceType(devInit, FILE_DEVICE_UNKNOWN);
@@ -151,40 +215,112 @@ VhidkmCtlDeviceCreateOnce(
     status = WdfDeviceCreate(&devInit, &devAttr, &ctlDevice);
     if (!NT_SUCCESS(status)) {
         if (devInit != NULL) { WdfDeviceInitFree(devInit); }
-        goto done;
+        return status;
     }
 
     devCtxOnCtl = VhidkmCtlDevGetContext(ctlDevice);
+    devCtxOnCtl->DevCtx = NULL;
+
+    /* Lock guarding the DevCtx backpointer for the lifetime of the device. */
+    WDF_OBJECT_ATTRIBUTES_INIT(&lockAttr);
+    lockAttr.ParentObject = ctlDevice;
+    status = WdfSpinLockCreate(&lockAttr, &devCtxOnCtl->Lock);
+    if (!NT_SUCCESS(status)) {
+        WdfObjectDelete(ctlDevice);
+        return status;
+    }
+
+    /*
+     * Bind before publishing the interface and finishing initialization
+     * so the very first open already resolves to this FDO. No reader can
+     * race us here: the device interface is not yet enabled.
+     */
     devCtxOnCtl->DevCtx = DevCtx;
 
     status = WdfDeviceCreateDeviceInterface(
         ctlDevice, &GUID_DEVINTERFACE_VHIDKM_CTL, NULL);
     if (!NT_SUCCESS(status)) {
         WdfObjectDelete(ctlDevice);
-        goto done;
+        return status;
     }
 
     status = VhidkmCtlIoctlInitialize(ctlDevice);
     if (!NT_SUCCESS(status)) {
         WdfObjectDelete(ctlDevice);
-        goto done;
+        return status;
     }
 
     WdfControlFinishInitializing(ctlDevice);
 
     g_CtlDevice           = ctlDevice;
     DevCtx->ControlDevice = ctlDevice;
-
-    /* Publish completion by transitioning the once-flag 1 -> 2. */
-    InterlockedExchange(&g_CtlInitOnce, 2);
-    TracePnp("control device created, interface published");
     return STATUS_SUCCESS;
+}
 
-done:
-    /* Roll back the once-flag so a retry is possible. */
-    InterlockedExchange(&g_CtlInitOnce, 0);
-    TraceError("control device creation failed %!STATUS!", status);
-    return status;
+_Use_decl_annotations_
+VOID
+VhidkmCtlDetachDevice(
+    struct _VHIDKM_DEVICE_CONTEXT* DevCtx
+    )
+{
+    WDFDEVICE               ctlDevice;
+    PVHIDKM_CTL_DEV_CONTEXT devCtxOnCtl;
+
+    if (DevCtx == NULL) {
+        return;
+    }
+    ctlDevice = DevCtx->ControlDevice;
+    if (ctlDevice == NULL) {
+        return;
+    }
+    devCtxOnCtl = VhidkmCtlDevGetContext(ctlDevice);
+    if (devCtxOnCtl == NULL || devCtxOnCtl->Lock == NULL) {
+        return;
+    }
+
+    WdfSpinLockAcquire(devCtxOnCtl->Lock);
+    if (devCtxOnCtl->DevCtx == DevCtx) {
+        devCtxOnCtl->DevCtx = NULL;
+    }
+    WdfSpinLockRelease(devCtxOnCtl->Lock);
+}
+
+_Use_decl_annotations_
+struct _VHIDKM_DEVICE_CONTEXT*
+VhidkmCtlAcquireDevice(
+    WDFDEVICE ControlDevice
+    )
+{
+    PVHIDKM_CTL_DEV_CONTEXT        devCtxOnCtl = VhidkmCtlDevGetContext(ControlDevice);
+    struct _VHIDKM_DEVICE_CONTEXT* dev = NULL;
+
+    if (devCtxOnCtl == NULL || devCtxOnCtl->Lock == NULL) {
+        return NULL;
+    }
+
+    WdfSpinLockAcquire(devCtxOnCtl->Lock);
+    dev = devCtxOnCtl->DevCtx;
+    if (dev != NULL) {
+        /*
+         * Keep the FDO (and therefore its context and child queues)
+         * alive until VhidkmCtlReleaseDevice, even if an unplug removes
+         * the device while this request is in flight.
+         */
+        WdfObjectReference(dev->Device);
+    }
+    WdfSpinLockRelease(devCtxOnCtl->Lock);
+    return dev;
+}
+
+_Use_decl_annotations_
+VOID
+VhidkmCtlReleaseDevice(
+    struct _VHIDKM_DEVICE_CONTEXT* DevCtx
+    )
+{
+    if (DevCtx != NULL) {
+        WdfObjectDereference(DevCtx->Device);
+    }
 }
 
 _Use_decl_annotations_
@@ -213,8 +349,8 @@ VhidkmCtlEvtFileCleanup(
     WDFFILEOBJECT FileObject
     )
 {
-    WDFDEVICE               ctlDevice = WdfFileObjectGetDevice(FileObject);
-    PVHIDKM_CTL_DEV_CONTEXT devCtxOnCtl = VhidkmCtlDevGetContext(ctlDevice);
+    WDFDEVICE                      ctlDevice = WdfFileObjectGetDevice(FileObject);
+    struct _VHIDKM_DEVICE_CONTEXT* dev;
 
     PAGED_CODE();
 
@@ -223,20 +359,23 @@ VhidkmCtlEvtFileCleanup(
     /*
      * When the controlling process exits (or explicitly closes the
      * handle) ensure no input remains "pressed" by pushing all-up
-     * reports. This mirrors the behaviour of a real keyboard that
-     * would stop sending press reports when the cable is removed.
+     * reports. Resolve the FDO through the reference-guarded accessor so
+     * a concurrent unplug cannot free the context underneath us.
      */
-    if (devCtxOnCtl != NULL && devCtxOnCtl->DevCtx != NULL) {
+    dev = VhidkmCtlAcquireDevice(ctlDevice);
+    if (dev != NULL) {
         VHID_KEYBOARD_INPUT_REPORT  kReport = { 0 };
         VHID_MOUSE_REL_REPORT       mReport = { 0 };
 
         kReport.ReportId = VHID_REPORTID_KEYBOARD_INPUT;
-        (VOID)VhidkmDevicePostInputReport(devCtxOnCtl->DevCtx,
+        (VOID)VhidkmDevicePostInputReport(dev,
             (const UCHAR*)&kReport, (UCHAR)sizeof(kReport));
 
         mReport.ReportId = VHID_REPORTID_MOUSE_REL;
-        (VOID)VhidkmDevicePostInputReport(devCtxOnCtl->DevCtx,
+        (VOID)VhidkmDevicePostInputReport(dev,
             (const UCHAR*)&mReport, (UCHAR)sizeof(mReport));
+
+        VhidkmCtlReleaseDevice(dev);
     }
 }
 

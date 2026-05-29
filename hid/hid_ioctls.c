@@ -356,15 +356,32 @@ HidGetString(
             NTSTATUS s = DevCtx->BusIpc.GetUsbDescriptor(
                 DevCtx->BusIpc.InterfaceHeader.Context,
                 0x03 /* STRING */, 3, buf, sizeof(buf), &wrote);
-            if (NT_SUCCESS(s) && wrote > 2) {
-                /* Strip the 2-byte USB string-descriptor header. */
+            if (NT_SUCCESS(s) && wrote >= 2) {
+                /*
+                 * The bus returns a USB string descriptor: a 2-byte
+                 * header (bLength, bDescriptorType) followed by a
+                 * UTF-16LE payload with no terminator. hidclass expects
+                 * a null-terminated wide string, so strip the header,
+                 * copy whole WCHARs only, and append a terminator. We
+                 * never truncate mid-WCHAR or hand back an unterminated
+                 * buffer.
+                 */
                 const WCHAR* payload = (const WCHAR*)(buf + 2);
-                size_t       payloadBytes = wrote - 2;
-                if (payloadBytes > outLen) {
-                    payloadBytes = outLen;
+                size_t payloadBytes = (size_t)wrote - 2;
+                size_t needBytes;
+
+                payloadBytes &= ~(size_t)(sizeof(WCHAR) - 1);
+                needBytes = payloadBytes + sizeof(WCHAR);
+
+                if (outLen < needBytes) {
+                    *Info = needBytes;
+                    return STATUS_BUFFER_TOO_SMALL;
                 }
-                RtlCopyMemory(out, payload, payloadBytes);
-                *Info = payloadBytes;
+                if (payloadBytes > 0) {
+                    RtlCopyMemory(out, payload, payloadBytes);
+                }
+                ((WCHAR*)out)[payloadBytes / sizeof(WCHAR)] = L'\0';
+                *Info = needBytes;
                 return STATUS_SUCCESS;
             }
         }

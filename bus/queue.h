@@ -21,7 +21,15 @@
 #include "fdo.h"
 
 typedef struct _VUSBBUS_CTL_DEV_CONTEXT {
+    /*
+     * Backpointer to the bus FDO context. The control device is a
+     * driver-lifetime singleton that can outlive any single FDO (the
+     * root-enumerated bus can be disabled and re-enabled), so this
+     * pointer is guarded by Lock and cleared on FDO teardown. Readers
+     * take a reference on FdoCtx->Fdo for the duration of their work.
+     */
     PVUSBBUS_FDO_CONTEXT FdoCtx;
+    WDFSPINLOCK          Lock;
 } VUSBBUS_CTL_DEV_CONTEXT, *PVUSBBUS_CTL_DEV_CONTEXT;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VUSBBUS_CTL_DEV_CONTEXT, VusbBusCtlDevGetContext);
@@ -29,8 +37,7 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VUSBBUS_CTL_DEV_CONTEXT, VusbBusCtlDevGetCont
 _IRQL_requires_(PASSIVE_LEVEL)
 NTSTATUS
 VusbBusQueueInitialize(
-    _In_ WDFDEVICE              ControlDevice,
-    _In_ PVUSBBUS_FDO_CONTEXT   FdoCtx
+    _In_ WDFDEVICE ControlDevice
     );
 
 #endif /* VHID_BUS_QUEUE_H_ */

@@ -60,7 +60,16 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VHIDKM_CTL_FILE_CONTEXT, VhidkmCtlFileGetCont
  * would wrap it in a lookup by slot id.
  */
 struct _VHIDKM_CTL_DEV_CONTEXT {
+    /*
+     * Backpointer to the FDO currently backing the virtual device.
+     * The control device outlives any single FDO (it is a driver-wide
+     * singleton), so this pointer is guarded by Lock and cleared when
+     * the FDO tears down. Readers take a reference on DevCtx->Device for
+     * the duration of their work so the FDO context cannot be freed
+     * underneath an in-flight IOCTL.
+     */
     struct _VHIDKM_DEVICE_CONTEXT* DevCtx;
+    WDFSPINLOCK                    Lock;
 };
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(VHIDKM_CTL_DEV_CONTEXT, VhidkmCtlDevGetContext);
@@ -75,6 +84,36 @@ NTSTATUS
 VhidkmCtlDeviceCreateOnce(
     _In_ WDFDEVICE                        AssociatedFdo,
     _In_ struct _VHIDKM_DEVICE_CONTEXT*   DevCtx
+    );
+
+/*
+ * Clear the control device's backpointer if it still refers to DevCtx.
+ * Called from the FDO teardown path so no IOCTL arriving after the FDO
+ * is gone can reach a freed device context. Idempotent.
+ */
+_IRQL_requires_max_(DISPATCH_LEVEL)
+VOID
+VhidkmCtlDetachDevice(
+    _In_ struct _VHIDKM_DEVICE_CONTEXT* DevCtx
+    );
+
+/*
+ * Resolve the control device's current FDO context and take a reference
+ * on its WDFDEVICE so the context (and its child queues) cannot be freed
+ * while the caller uses it. Returns NULL if no FDO is currently backing
+ * the control device. Every non-NULL return must be balanced with
+ * VhidkmCtlReleaseDevice.
+ */
+_IRQL_requires_max_(DISPATCH_LEVEL)
+struct _VHIDKM_DEVICE_CONTEXT*
+VhidkmCtlAcquireDevice(
+    _In_ WDFDEVICE ControlDevice
+    );
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+VOID
+VhidkmCtlReleaseDevice(
+    _In_ struct _VHIDKM_DEVICE_CONTEXT* DevCtx
     );
 
 #endif /* VHID_HID_CTL_DEVICE_H_ */

@@ -40,7 +40,7 @@ VusbBusPdoAssignIds(
 
     PAGED_CODE();
 
-    /* ---- Device ID (most specific hardware id) ---- */
+    /* Device ID (most specific hardware id). */
     status = RtlStringCchPrintfW(
         buffer, RTL_NUMBER_OF(buffer),
         L"USB\\VID_%04X&PID_%04X&REV_%04X",
@@ -59,7 +59,7 @@ VusbBusPdoAssignIds(
         return status;
     }
 
-    /* ---- Secondary hardware id (no REV) ---- */
+    /* Secondary hardware id (no REV). */
     status = RtlStringCchPrintfW(
         buffer, RTL_NUMBER_OF(buffer),
         L"USB\\VID_%04X&PID_%04X",
@@ -73,7 +73,7 @@ VusbBusPdoAssignIds(
         return status;
     }
 
-    /* ---- Compatible ids ---- */
+    /* Compatible ids. */
     RtlInitUnicodeString(&unicodeStr, VHID_COMPATID_HID_W);
     status = WdfPdoInitAddCompatibleID(DeviceInit, &unicodeStr);
     if (!NT_SUCCESS(status)) {
@@ -91,19 +91,33 @@ VusbBusPdoAssignIds(
      * PnP can treat instances distinctly.
      */
     {
-        BOOLEAN haveSerial = FALSE;
-        ULONG   i;
+        ULONG i;
+        ULONG n = 0;
+
+        /*
+         * The instance ID becomes part of the device's PnP path, so the
+         * caller-supplied serial must be sanitized: restrict it to
+         * printable ASCII and replace the path separator, comma, and any
+         * control/non-ASCII characters with '_'. Copy at most 32 chars,
+         * stopping at the first NUL. buffer is WCHAR[96], so n (<= 32)
+         * plus the terminator never overflows it.
+         */
         for (i = 0; i < RTL_NUMBER_OF(Slot->Serial); i++) {
-            if (Slot->Serial[i] != L'\0') { haveSerial = TRUE; break; }
+            WCHAR c = Slot->Serial[i];
+            if (c == L'\0') {
+                break;
+            }
+            if (c < 0x20 || c > 0x7E || c == L'\\' || c == L',') {
+                c = L'_';
+            }
+            buffer[n++] = c;
         }
-        if (haveSerial) {
-            RtlZeroMemory(buffer, sizeof(buffer));
-            /* Copy at most 32 chars and null-terminate. */
-            RtlCopyMemory(buffer, Slot->Serial,
-                min(sizeof(Slot->Serial), sizeof(buffer) - sizeof(WCHAR)));
-            buffer[RTL_NUMBER_OF(Slot->Serial)] = L'\0';
+        buffer[n] = L'\0';
+
+        if (n > 0) {
             RtlInitUnicodeString(&unicodeStr, buffer);
         } else {
+            /* No usable serial: synthesize a unique id from the slot. */
             status = RtlStringCchPrintfW(
                 buffer, RTL_NUMBER_OF(buffer),
                 L"VHID-%08X", Slot->SlotId);

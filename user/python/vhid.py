@@ -443,12 +443,10 @@ def _find_interface_path(iface: GUID) -> Optional[str]:
                 required.value, None, None):
             return None
 
-        # DevicePath starts at offset cbSize within the returned buffer.
+        # DevicePath follows the 4-byte cbSize field in the buffer.
         path_offset = ctypes.sizeof(wt.DWORD)
         raw = ctypes.wstring_at(
-            ctypes.addressof(buf.raw) + path_offset
-            if False else ctypes.cast(detail, ctypes.c_void_p).value +
-                 path_offset)
+            ctypes.cast(detail, ctypes.c_void_p).value + path_offset)
         return raw
     finally:
         setupapi.SetupDiDestroyDeviceInfoList(handle)

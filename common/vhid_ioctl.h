@@ -58,9 +58,7 @@
  * glance which driver a misrouted IOCTL was destined for.
  */
 
-/* ------------------------------------------------------------------
- * Shared response structs
- * ------------------------------------------------------------------ */
+/* Shared response structs. */
 
 #include <pshpack4.h>
 
@@ -71,9 +69,7 @@ typedef struct _VHID_VERSION {
     UINT32 ApiLevel;       /* VHID_API_LEVEL — user-mode pins against this */
 } VHID_VERSION, *PVHID_VERSION;
 
-/* ------------------------------------------------------------------
- * vusbbus.sys control IOCTLs (0x800..0x8FF)
- * ------------------------------------------------------------------ */
+/* vusbbus.sys control IOCTLs (0x800..0x8FF). */
 
 /*
  * IOCTL_VUSBBUS_GET_VERSION
@@ -96,12 +92,19 @@ typedef struct _VHID_VERSION {
  *   and the generated instance GUID. v1 allows only one live device,
  *   so calling this twice back-to-back fails with
  *   STATUS_DEVICE_ALREADY_ATTACHED.
+ *
+ *   Vid/Pid/Version are reserved in v1 and ignored: the device always
+ *   presents the canonical VHID_DEFAULT_VID/PID/REV because the HID
+ *   minidriver INF matches those hardware IDs statically. The fields
+ *   are kept in the request so a future dynamic-INF revision can honor
+ *   them without an ABI change. Serial IS honored (surfaced as the USB
+ *   iSerialNumber string and the PnP instance id).
  */
 typedef struct _VHID_PLUGIN_REQ {
     UINT32 Size;           /* must equal sizeof(VHID_PLUGIN_REQ) */
-    UINT16 Vid;            /* 0 => VHID_DEFAULT_VID */
-    UINT16 Pid;            /* 0 => VHID_DEFAULT_PID */
-    UINT16 Version;        /* 0 => VHID_DEFAULT_REV */
+    UINT16 Vid;            /* reserved in v1; ignored */
+    UINT16 Pid;            /* reserved in v1; ignored */
+    UINT16 Version;        /* reserved in v1; ignored */
     UINT16 Reserved;       /* must be 0 */
     WCHAR  Serial[32];     /* non-null-terminated; driver copies up to 32 */
 } VHID_PLUGIN_REQ, *PVHID_PLUGIN_REQ;
@@ -177,9 +180,7 @@ typedef struct _VHID_DESC_REQ {
 #define IOCTL_VUSBBUS_GET_USB_DESCRIPTOR \
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x804, METHOD_BUFFERED, FILE_READ_ACCESS)
 
-/* ------------------------------------------------------------------
- * vhidkm.sys control IOCTLs (0x900..0x9FF)
- * ------------------------------------------------------------------ */
+/* vhidkm.sys control IOCTLs (0x900..0x9FF). */
 
 #define IOCTL_VHIDKM_GET_VERSION \
     CTL_CODE(FILE_DEVICE_UNKNOWN, 0x900, METHOD_BUFFERED, FILE_READ_ACCESS)
@@ -218,11 +219,11 @@ typedef struct _VHID_KBD_KEYS_REQ {
  * IOCTL_VHIDKM_KEY_STROKE
  *   Input:  VHID_KEYSTROKE_REQ
  *   Output: none
- *   Fire-and-forget keystroke: press the given usage with the given
- *   modifiers, wait HoldMs ms, release. HoldMs is clamped [0, 5000]
- *   at the kernel boundary so one caller cannot park a worker for
- *   arbitrary durations. Executes asynchronously on a KMDF timer;
- *   the IOCTL completes as soon as the press phase is queued.
+ *   Press the given usage with the given modifiers, hold for HoldMs
+ *   milliseconds, then release. HoldMs is clamped to [0, 5000] at the
+ *   kernel boundary so the bounded wait cannot be abused. The call is
+ *   synchronous: it blocks the requesting thread for the hold duration
+ *   and returns only after the release report has been enqueued.
  */
 typedef struct _VHID_KEYSTROKE_REQ {
     UINT32 Size;

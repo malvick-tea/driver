@@ -58,9 +58,7 @@ extern "C" {
 
 typedef struct vhid_ctx vhid_ctx;
 
-/* ------------------------------------------------------------------
- * Lifecycle
- * ------------------------------------------------------------------ */
+/* Lifecycle. */
 
 /*
  * Open and fully initialise a VHID session.
@@ -69,9 +67,10 @@ typedef struct vhid_ctx vhid_ctx;
  *     control device. Fails with ERROR_SERVICE_NOT_ACTIVE if the bus
  *     driver is not installed / loaded.
  *   - Validates the bus driver's API level against VHID_API_LEVEL.
- *   - Issues IOCTL_VUSBBUS_PLUG_IN with caller-supplied VID/PID/
- *     Version (zero fields use protocol defaults). Retrieves the
- *     assigned slot id.
+ *   - Issues IOCTL_VUSBBUS_PLUG_IN. In v1 the vid/pid/version arguments
+ *     are reserved and ignored: the device always presents the
+ *     canonical VID/PID/REV because the HID INF matches them statically.
+ *     The serial IS honored. Retrieves the assigned slot id.
  *   - Waits up to plugin_timeout_ms for the HID control-device
  *     interface to appear (PnP can take up to a few seconds on first
  *     install) and opens it.
@@ -95,16 +94,12 @@ DWORD vhid_open(
  */
 void vhid_close(vhid_ctx *ctx);
 
-/* ------------------------------------------------------------------
- * Versioning
- * ------------------------------------------------------------------ */
+/* Versioning. */
 
 DWORD vhid_get_bus_version(vhid_ctx *ctx, VHID_VERSION *out_ver);
 DWORD vhid_get_hid_version(vhid_ctx *ctx, VHID_VERSION *out_ver);
 
-/* ------------------------------------------------------------------
- * Screen metrics (required before vhid_mouse_abs_px)
- * ------------------------------------------------------------------ */
+/* Screen metrics (required before vhid_mouse_abs_px). */
 
 /*
  * Configure the virtual-screen bounding box the driver uses when
@@ -129,9 +124,7 @@ DWORD vhid_set_screen_metrics(
  */
 DWORD vhid_set_screen_metrics_auto(vhid_ctx *ctx);
 
-/* ------------------------------------------------------------------
- * Keyboard injection
- * ------------------------------------------------------------------ */
+/* Keyboard injection. */
 
 /*
  * Submit a fully formed keyboard input report. modifiers is a
@@ -145,10 +138,10 @@ DWORD vhid_keyboard(
     );
 
 /*
- * Press a single key with the given modifiers for hold_ms milliseconds
- * (clamped by the driver to VHID_KEYSTROKE_HOLD_MAX_MS), then release.
- * Returns as soon as the press is queued; the release is scheduled
- * asynchronously by the driver.
+ * Press a single key with the given modifiers, hold for hold_ms
+ * milliseconds (clamped by the driver to VHID_KEYSTROKE_HOLD_MAX_MS),
+ * then release. The call is synchronous: it returns after the hold
+ * elapses and the release report has been enqueued.
  */
 DWORD vhid_keystroke(
     vhid_ctx *ctx,
@@ -157,9 +150,7 @@ DWORD vhid_keystroke(
     uint32_t hold_ms
     );
 
-/* ------------------------------------------------------------------
- * Mouse injection
- * ------------------------------------------------------------------ */
+/* Mouse injection. */
 
 /*
  * Relative mouse report. dx/dy are signed 16-bit deltas. wheel/hwheel
@@ -200,9 +191,7 @@ DWORD vhid_mouse_abs_px(
     int8_t hwheel
     );
 
-/* ------------------------------------------------------------------
- * LED state
- * ------------------------------------------------------------------ */
+/* LED state. */
 
 /*
  * Non-blocking: read the last LED byte observed from hidclass.sys.
@@ -223,9 +212,7 @@ DWORD vhid_wait_led_change(
     uint8_t *out_leds
     );
 
-/* ------------------------------------------------------------------
- * Reset
- * ------------------------------------------------------------------ */
+/* Reset. */
 
 /*
  * Emit an all-up keyboard + all-up relative-mouse report, clearing
@@ -233,9 +220,7 @@ DWORD vhid_wait_led_change(
  */
 DWORD vhid_reset(vhid_ctx *ctx);
 
-/* ------------------------------------------------------------------
- * Bus-level admin helpers (optional)
- * ------------------------------------------------------------------ */
+/* Bus-level admin helpers (optional). */
 
 /*
  * Enumerate live bus slots. out_slots is a caller-allocated buffer of

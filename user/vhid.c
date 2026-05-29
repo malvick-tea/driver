@@ -60,9 +60,7 @@
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
 
-/* ------------------------------------------------------------------
- * Context
- * ------------------------------------------------------------------ */
+/* Context. */
 
 struct vhid_ctx {
     HANDLE      BusHandle;          /* control handle of vusbbus.sys */
@@ -73,9 +71,7 @@ struct vhid_ctx {
     wchar_t     HidInterfacePath[MAX_PATH];
 };
 
-/* ------------------------------------------------------------------
- * Internal: device-interface discovery
- * ------------------------------------------------------------------ */
+/* Internal: device-interface discovery. */
 
 static DWORD FindInterfacePath(
     const GUID *IfGuid,
@@ -183,9 +179,7 @@ static HANDLE OpenInterface(const wchar_t *Path)
                        NULL);
 }
 
-/* ------------------------------------------------------------------
- * Internal: IOCTL helpers
- * ------------------------------------------------------------------ */
+/* Internal: IOCTL helpers. */
 
 static DWORD IoctlSync(
     HANDLE  Handle,
@@ -257,9 +251,7 @@ static DWORD IoctlOverlapped(
     return ERROR_SUCCESS;
 }
 
-/* ------------------------------------------------------------------
- * Lifecycle
- * ------------------------------------------------------------------ */
+/* Lifecycle. */
 
 DWORD vhid_open(
     uint16_t          vid,
@@ -395,9 +387,7 @@ void vhid_close(vhid_ctx *ctx)
     LocalFree(ctx);
 }
 
-/* ------------------------------------------------------------------
- * Versioning
- * ------------------------------------------------------------------ */
+/* Versioning. */
 
 DWORD vhid_get_bus_version(vhid_ctx *ctx, VHID_VERSION *out_ver)
 {
@@ -415,9 +405,7 @@ DWORD vhid_get_hid_version(vhid_ctx *ctx, VHID_VERSION *out_ver)
                      NULL, 0, out_ver, sizeof(*out_ver), &br);
 }
 
-/* ------------------------------------------------------------------
- * Screen metrics
- * ------------------------------------------------------------------ */
+/* Screen metrics. */
 
 DWORD vhid_set_screen_metrics(
     vhid_ctx *ctx,
@@ -453,9 +441,7 @@ DWORD vhid_set_screen_metrics_auto(vhid_ctx *ctx)
     return vhid_set_screen_metrics(ctx, x, y, cx, cy);
 }
 
-/* ------------------------------------------------------------------
- * Keyboard
- * ------------------------------------------------------------------ */
+/* Keyboard. */
 
 DWORD vhid_keyboard(
     vhid_ctx      *ctx,
@@ -501,9 +487,7 @@ DWORD vhid_keystroke(
                      &req, sizeof(req), NULL, 0, &br);
 }
 
-/* ------------------------------------------------------------------
- * Mouse
- * ------------------------------------------------------------------ */
+/* Mouse. */
 
 DWORD vhid_mouse_rel(
     vhid_ctx *ctx,
@@ -586,9 +570,7 @@ DWORD vhid_mouse_abs_px(
                      &req, sizeof(req), NULL, 0, &br);
 }
 
-/* ------------------------------------------------------------------
- * LED
- * ------------------------------------------------------------------ */
+/* LED. */
 
 DWORD vhid_get_led_state(vhid_ctx *ctx, uint8_t *out_leds)
 {
@@ -673,9 +655,7 @@ DWORD vhid_wait_led_change(
     return ERROR_SUCCESS;
 }
 
-/* ------------------------------------------------------------------
- * Reset
- * ------------------------------------------------------------------ */
+/* Reset. */
 
 DWORD vhid_reset(vhid_ctx *ctx)
 {
@@ -685,9 +665,7 @@ DWORD vhid_reset(vhid_ctx *ctx)
                      NULL, 0, NULL, 0, &br);
 }
 
-/* ------------------------------------------------------------------
- * Bus admin
- * ------------------------------------------------------------------ */
+/* Bus admin. */
 
 DWORD vhid_list_slots(
     vhid_ctx       *ctx,
@@ -703,6 +681,9 @@ DWORD vhid_list_slots(
 
     if (ctx == NULL || out_count == NULL) return ERROR_INVALID_PARAMETER;
     if (max_slots > 0 && out_slots == NULL) return ERROR_INVALID_PARAMETER;
+
+    /* Always defined, even on the early IOCTL-failure return below. */
+    *out_count = 0;
 
     /*
      * The driver returns a variable-length VHID_SLOT_LIST. We size the

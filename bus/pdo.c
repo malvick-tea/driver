@@ -4,7 +4,7 @@
  * Virtual USB child PDO creation and PnP/power callbacks.
  *
  * Creation flow:
- *   1) WdfPdoInitAllocate — allocate the PDOINIT.
+ *   1) WdfPdoInitAllocate - allocate the PDOINIT.
  *   2) Assign hardware ids / compat ids / instance id / device text
  *      (see pdo_ids.c for details).
  *   3) Register an IRP preprocess callback for IRP_MJ_PNP so we can
@@ -104,8 +104,29 @@ VusbBusPdoCreate(
     pdoInit = NULL; /* WdfDeviceCreate consumed it */
 
     pdoCtx           = VusbBusPdoGetContext(pdo);
+    pdoCtx->Pdo      = pdo;
     pdoCtx->Slot     = Slot;
     pdoCtx->FdoCtx   = FdoCtx;
+
+    /*
+     * Capture the serial into the PDO context so the IPC descriptor
+     * path can answer iSerialNumber without touching the slot table.
+     * Slot->Serial is not guaranteed null-terminated; record the
+     * populated character count (stop at the first NUL, cap at the
+     * array size). SerialChars == 0 means "fall back to the default
+     * serial string".
+     */
+    {
+        ULONG i;
+        RtlCopyMemory(pdoCtx->Serial, Slot->Serial, sizeof(pdoCtx->Serial));
+        pdoCtx->SerialChars = 0;
+        for (i = 0; i < RTL_NUMBER_OF(pdoCtx->Serial); i++) {
+            if (pdoCtx->Serial[i] == L'\0') {
+                break;
+            }
+            pdoCtx->SerialChars++;
+        }
+    }
 
     {
         WDF_OBJECT_ATTRIBUTES lockAttr;
@@ -129,7 +150,7 @@ VusbBusPdoCreate(
         }
     }
 
-    /* PnP capabilities — the device is removable and surprise-remove safe. */
+    /* PnP capabilities: the device is removable and surprise-remove safe. */
     WDF_DEVICE_PNP_CAPABILITIES_INIT(&pnpCaps);
     pnpCaps.Removable           = WdfTrue;
     pnpCaps.SurpriseRemovalOK   = WdfTrue;
@@ -198,20 +219,22 @@ VusbBusPdoEvtCleanup(
 
     PAGED_CODE();
 
-    TracePdo("PDO cleanup slot=%u",
-        ctx->Slot ? ctx->Slot->SlotId : 0xFFFFFFFFu);
+    TracePdo("PDO cleanup");
 
-    if (ctx->Slot != NULL) {
-        /*
-         * If the FDO slot table still points to us, scrub the
-         * backpointer. The slot wait-lock is not held here — but
-         * the FDO cleanup sequence guarantees the slot's PdoDevice
-         * handle was already cleared in VusbBusFdoUnplug, so this
-         * is a belt-and-suspenders safeguard for an abrupt tear-
-         * down path (e.g., driver unload without explicit unplug).
-         */
+    /*
+     * If the FDO slot table still points to us, scrub the backpointer.
+     * The owning FDO (and therefore SlotLock) outlives its child PDOs,
+     * so the lock is valid here. Take it because a concurrent
+     * PLUG_IN/UNPLUG can be mutating the same slot entry: only clear the
+     * handle if it still refers to THIS device, so we never clobber a
+     * slot that has already been recycled to a new PDO.
+     */
+    if (ctx->FdoCtx != NULL && ctx->FdoCtx->SlotLock != NULL &&
+        ctx->Slot != NULL) {
+        WdfWaitLockAcquire(ctx->FdoCtx->SlotLock, NULL);
         if (ctx->Slot->PdoDevice == (WDFDEVICE)Object) {
             ctx->Slot->PdoDevice = NULL;
         }
+        WdfWaitLockRelease(ctx->FdoCtx->SlotLock);
     }
 }

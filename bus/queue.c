@@ -24,6 +24,7 @@
 
 #include "driver.h"
 #include "queue.h"
+#include "ctl_device.h"
 #include "fdo.h"
 #include "usbdesc.h"
 #include "trace.h"
@@ -39,24 +40,19 @@ EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL  VusbBusEvtIoDeviceControl;
 _Use_decl_annotations_
 NTSTATUS
 VusbBusQueueInitialize(
-    WDFDEVICE            ControlDevice,
-    PVUSBBUS_FDO_CONTEXT FdoCtx
+    WDFDEVICE ControlDevice
     )
 {
-    WDF_IO_QUEUE_CONFIG     cfg;
-    WDF_OBJECT_ATTRIBUTES   attr;
-    PVUSBBUS_CTL_DEV_CONTEXT ctx;
-    NTSTATUS                status;
+    WDF_IO_QUEUE_CONFIG cfg;
+    NTSTATUS            status;
 
     PAGED_CODE();
 
-    WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attr, VUSBBUS_CTL_DEV_CONTEXT);
-    status = WdfObjectAllocateContext(ControlDevice, &attr, (PVOID*)&ctx);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
-    ctx->FdoCtx = FdoCtx;
-
+    /*
+     * The control-device context (and its FdoCtx backpointer + lock) is
+     * allocated by ctl_device.c before this runs; here we only stand up
+     * the default IO queue that fans IOCTLs to the handlers below.
+     */
     WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&cfg, WdfIoQueueDispatchParallel);
     cfg.EvtIoDeviceControl = VusbBusEvtIoDeviceControl;
     /*
@@ -229,12 +225,21 @@ VusbBusEvtIoDeviceControl(
     ULONG      IoControlCode
     )
 {
-    WDFDEVICE               ctlDevice = WdfIoQueueGetDevice(Queue);
-    PVUSBBUS_CTL_DEV_CONTEXT ctx       = VusbBusCtlDevGetContext(ctlDevice);
-    NTSTATUS                status    = STATUS_INVALID_DEVICE_REQUEST;
-    ULONG_PTR               info      = 0;
+    WDFDEVICE            ctlDevice = WdfIoQueueGetDevice(Queue);
+    PVUSBBUS_FDO_CONTEXT fdoCtx;
+    NTSTATUS             status = STATUS_INVALID_DEVICE_REQUEST;
+    ULONG_PTR            info   = 0;
 
     PAGED_CODE();
+
+    /*
+     * Resolve the backing FDO and hold a reference on it for the whole
+     * IOCTL so a concurrent disable/remove cannot free the context
+     * underneath us. GET_VERSION and GET_USB_DESCRIPTOR answer from
+     * static data and do not need the FDO; the slot operations do, and
+     * fail with STATUS_DEVICE_NOT_READY when the bus is tearing down.
+     */
+    fdoCtx = VusbBusCtlAcquireFdo(ctlDevice);
 
     switch (IoControlCode) {
     case IOCTL_VUSBBUS_GET_VERSION:
@@ -242,16 +247,19 @@ VusbBusEvtIoDeviceControl(
         break;
 
     case IOCTL_VUSBBUS_PLUG_IN:
-        status = BusCtlPlugIn(ctx->FdoCtx, Request,
+        if (fdoCtx == NULL) { status = STATUS_DEVICE_NOT_READY; break; }
+        status = BusCtlPlugIn(fdoCtx, Request,
                               InputBufferLength, OutputBufferLength, &info);
         break;
 
     case IOCTL_VUSBBUS_UNPLUG:
-        status = BusCtlUnplug(ctx->FdoCtx, Request, InputBufferLength);
+        if (fdoCtx == NULL) { status = STATUS_DEVICE_NOT_READY; break; }
+        status = BusCtlUnplug(fdoCtx, Request, InputBufferLength);
         break;
 
     case IOCTL_VUSBBUS_LIST:
-        status = BusCtlList(ctx->FdoCtx, Request, OutputBufferLength, &info);
+        if (fdoCtx == NULL) { status = STATUS_DEVICE_NOT_READY; break; }
+        status = BusCtlList(fdoCtx, Request, OutputBufferLength, &info);
         break;
 
     case IOCTL_VUSBBUS_GET_USB_DESCRIPTOR:
@@ -266,4 +274,8 @@ VusbBusEvtIoDeviceControl(
     }
 
     WdfRequestCompleteWithInformation(Request, status, info);
+
+    if (fdoCtx != NULL) {
+        VusbBusCtlReleaseFdo(fdoCtx);
+    }
 }

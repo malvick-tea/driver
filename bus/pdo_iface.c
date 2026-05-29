@@ -2,17 +2,19 @@
  * bus/pdo_iface.c
  *
  * Implementation of the published bus IPC interface plus the
- * IRP_MN_QUERY_INTERFACE preprocess path that hands the interface
- * to the HID minidriver.
+ * IRP_MN_QUERY_INTERFACE preprocess path that hands the interface to
+ * the HID minidriver.
  *
  * Callback implementations:
- *   VusbBusIpcGetUsbDescriptor      — defers to bus/usbdesc.c.
- *   VusbBusIpcNotifyFunctionReady   — stores the bound HID FDO,
- *                                     sets FunctionReady flag.
- *   VusbBusIpcNotifyLedChange       — updates cached LED state and
- *                                     wakes pending IOCTL waiters.
- *   VusbBusIpcOnUnplug              — no-op in v1; kept as a
- *                                     symmetric hook for future use.
+ *   VusbBusIpcGetUsbDescriptor      - defers to bus/usbdesc.c, and uses
+ *                                     the per-instance serial captured
+ *                                     in the PDO context for index 3.
+ *   VusbBusIpcNotifyFunctionReady   - stores the bound HID FDO, sets
+ *                                     the FunctionReady flag.
+ *   VusbBusIpcNotifyLedChange       - updates cached LED state and wakes
+ *                                     pending IOCTL waiters.
+ *   VusbBusIpcOnUnplug              - no-op in v1; kept as a symmetric
+ *                                     hook for future use.
  */
 
 #include "driver.h"
@@ -76,13 +78,12 @@ VusbBusPdoSetInterfaceDispatch(
     PAGED_CODE();
 
     /*
-     * Register a WDM preprocessor for IRP_MJ_PNP; we pass NULL for
-     * the MinorFunctions pointer so the filter fires for every
-     * minor code and we can inspect MinorFunction ourselves. KMDF
-     * delivers control to our routine before dispatching to its
-     * own PnP handler; we call IoSkipCurrentIrpStackLocation +
-     * complete the IRP ourselves only for QUERY_INTERFACE, else we
-     * forward to the framework.
+     * Register a WDM preprocessor for IRP_MJ_PNP; we pass NULL for the
+     * MinorFunctions pointer so the filter fires for every minor code
+     * and we can inspect MinorFunction ourselves. KMDF delivers control
+     * to our routine before its own PnP handling; for QUERY_INTERFACE of
+     * our GUID we complete the IRP ourselves, otherwise we hand it back
+     * to the framework unchanged with WdfDeviceWdmDispatchPreprocessedIrp.
      */
     return WdfDeviceInitAssignWdmIrpPreprocessCallback(
         DeviceInit,
@@ -105,14 +106,15 @@ VusbBusPdoPnpPreprocess(
     PVUSBBUS_PDO_CONTEXT ctx;
     NTSTATUS            status;
 
+    /*
+     * Anything that is not the interface query we answer is handed back
+     * to the framework as-is. We must NOT advance the IRP stack location
+     * before doing so: WdfDeviceWdmDispatchPreprocessedIrp expects the
+     * IRP positioned exactly where KMDF gave it to us. Calling
+     * IoSkipCurrentIrpStackLocation here would corrupt the PnP/power
+     * dispatch on this PDO.
+     */
     if (stack->MinorFunction != IRP_MN_QUERY_INTERFACE) {
-        /*
-         * Pass everything else through to KMDF. The framework
-         * calls IoSkipCurrentIrpStackLocation itself when its
-         * dispatcher returns, so we must not touch the IRP
-         * beyond forwarding it.
-         */
-        IoSkipCurrentIrpStackLocation(Irp);
         return WdfDeviceWdmDispatchPreprocessedIrp(
             WdfWdmDeviceGetWdfDeviceHandle(DeviceObject),
             Irp);
@@ -120,7 +122,6 @@ VusbBusPdoPnpPreprocess(
 
     if (!IsEqualGUID(stack->Parameters.QueryInterface.InterfaceType,
                      &GUID_VHID_BUS_INTERFACE_V1)) {
-        IoSkipCurrentIrpStackLocation(Irp);
         return WdfDeviceWdmDispatchPreprocessedIrp(
             WdfWdmDeviceGetWdfDeviceHandle(DeviceObject),
             Irp);
@@ -171,13 +172,14 @@ VusbBusIpcReference(
 {
     PVUSBBUS_PDO_CONTEXT pdoCtx = (PVUSBBUS_PDO_CONTEXT)Ctx;
     /*
-     * The PDO is parented to the WDFDRIVER; taking a WDFOBJECT
-     * reference on the PDO handle keeps it alive past
-     * surprise-remove until the HID minidriver releases its
-     * interface handle.
+     * Reference the PDO's own framework handle, captured at creation.
+     * This keeps the PDO (and its context) alive for as long as the HID
+     * minidriver holds the interface, independent of the slot table,
+     * which UNPLUG zeroes and a later PLUG_IN may recycle to a different
+     * device.
      */
-    if (pdoCtx != NULL && pdoCtx->Slot != NULL && pdoCtx->Slot->PdoDevice != NULL) {
-        WdfObjectReference(pdoCtx->Slot->PdoDevice);
+    if (pdoCtx != NULL && pdoCtx->Pdo != NULL) {
+        WdfObjectReference(pdoCtx->Pdo);
     }
 }
 
@@ -188,8 +190,8 @@ VusbBusIpcDereference(
     )
 {
     PVUSBBUS_PDO_CONTEXT pdoCtx = (PVUSBBUS_PDO_CONTEXT)Ctx;
-    if (pdoCtx != NULL && pdoCtx->Slot != NULL && pdoCtx->Slot->PdoDevice != NULL) {
-        WdfObjectDereference(pdoCtx->Slot->PdoDevice);
+    if (pdoCtx != NULL && pdoCtx->Pdo != NULL) {
+        WdfObjectDereference(pdoCtx->Pdo);
     }
 }
 
@@ -205,7 +207,21 @@ VusbBusIpcGetUsbDescriptor(
     PULONG BytesReturned
     )
 {
-    UNREFERENCED_PARAMETER(Context);
+    PVUSBBUS_PDO_CONTEXT pdoCtx = (PVUSBBUS_PDO_CONTEXT)Context;
+
+    /*
+     * iSerialNumber (string index 3) is per-instance: serve it from the
+     * serial captured in the PDO context so HidD_GetSerialNumberString
+     * reflects the value the caller passed to PLUG_IN. Everything else
+     * is a fixed table.
+     */
+    if (DescriptorType == USB_DESC_TYPE_STRING && DescriptorIndex == 3 &&
+        pdoCtx != NULL) {
+        return VusbBusUsbDescCopySerialString(
+            pdoCtx->Serial, pdoCtx->SerialChars,
+            Buffer, BufferLength, BytesReturned);
+    }
+
     return VusbBusUsbDescCopy(
         DescriptorType, DescriptorIndex,
         Buffer, BufferLength, BytesReturned);
@@ -247,14 +263,12 @@ VusbBusIpcNotifyLedChange(
     WdfSpinLockRelease(ctx->IpcLock);
 
     /*
-     * Wake every pending waiter. Each waiter's output buffer holds
-     * a single UCHAR; we fill it with the new baseline and complete
-     * the request with STATUS_SUCCESS.
+     * Wake every pending waiter. Each waiter's output buffer holds a
+     * single UCHAR; we fill it with the new baseline and complete the
+     * request with STATUS_SUCCESS.
      *
      * This is safe to run at DISPATCH_LEVEL because
-     * WdfIoQueueRetrieveNextRequest and WdfRequestComplete tolerate
-     * it (the former uses a spinlock internally; the latter defers
-     * user-mode completion via an APC from the framework).
+     * WdfIoQueueRetrieveNextRequest and WdfRequestComplete tolerate it.
      */
     for (;;) {
         PUCHAR  outBuf  = NULL;

@@ -91,18 +91,21 @@ VhidkmCtlEvtIoDeviceControl(
     )
 {
     WDFDEVICE               ctlDevice = WdfIoQueueGetDevice(Queue);
-    PVHIDKM_CTL_DEV_CONTEXT devCtxOnCtl = VhidkmCtlDevGetContext(ctlDevice);
-    PVHIDKM_DEVICE_CONTEXT  dev = devCtxOnCtl ? devCtxOnCtl->DevCtx : NULL;
+    PVHIDKM_DEVICE_CONTEXT  dev;
     WDFFILEOBJECT           fileObj = WdfRequestGetFileObject(Request);
     NTSTATUS                status = STATUS_INVALID_DEVICE_REQUEST;
     ULONG_PTR               info = 0;
 
+    /*
+     * Resolve the FDO backing the virtual device and hold a reference on
+     * it for the duration of this IOCTL. If nothing is currently plugged
+     * (or the FDO is tearing down) the control device is still open but
+     * injection is impossible; fail with a status user-mode can act on
+     * (re-plug). The reference guarantees the context and its queues
+     * cannot be freed underneath us while we run.
+     */
+    dev = VhidkmCtlAcquireDevice(ctlDevice);
     if (dev == NULL) {
-        /*
-         * Control device exists but no FDO is currently backing the
-         * virtual USB instance. Injection is impossible; fail with
-         * a status user-mode can act on (re-plug).
-         */
         WdfRequestCompleteWithInformation(Request, STATUS_DEVICE_NOT_READY, 0);
         return;
     }
@@ -154,6 +157,14 @@ VhidkmCtlEvtIoDeviceControl(
                                            InputBufferLength,
                                            OutputBufferLength);
         if (status == STATUS_PENDING) {
+            /*
+             * The request is parked in the LED wait queue; it will be
+             * completed by an LED update or by teardown draining the
+             * queue. Drop our reference now: the parked request does not
+             * depend on it, and teardown completes it before the FDO is
+             * freed.
+             */
+            VhidkmCtlReleaseDevice(dev);
             return;
         }
         break;
@@ -169,11 +180,10 @@ VhidkmCtlEvtIoDeviceControl(
     }
 
     WdfRequestCompleteWithInformation(Request, status, info);
+    VhidkmCtlReleaseDevice(dev);
 }
 
-/* ------------------------------------------------------------------
- * Individual handlers
- * ------------------------------------------------------------------ */
+/* Individual handlers. */
 
 static
 NTSTATUS

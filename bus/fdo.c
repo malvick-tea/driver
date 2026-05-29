@@ -171,10 +171,18 @@ VusbBusEvtDeviceReleaseHardware(
     WDFCMRESLIST ResourcesTranslated
     )
 {
+    PVUSBBUS_FDO_CONTEXT fdoCtx = VusbBusFdoGetContext(Device);
+
     PAGED_CODE();
-    UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(ResourcesTranslated);
     TracePnp("bus FDO ReleaseHardware");
+
+    /*
+     * Stop new control-device IOCTLs from resolving to this FDO as we
+     * tear down. Requests already in flight hold a reference on this
+     * WDFDEVICE and remain memory-safe until they complete.
+     */
+    VusbBusCtlDetachFdo(fdoCtx);
     return STATUS_SUCCESS;
 }
 
@@ -210,14 +218,17 @@ VusbBusFdoEvtCleanup(
     WDFOBJECT Object
     )
 {
+    PVUSBBUS_FDO_CONTEXT fdoCtx = VusbBusFdoGetContext((WDFDEVICE)Object);
+
     PAGED_CODE();
-    UNREFERENCED_PARAMETER(Object);
     TracePnp("bus FDO context cleanup");
+
     /*
-     * Every resource allocated through KMDF is parented to the FDO
-     * and is freed automatically. Custom allocations (if any were
-     * added later) would be freed here.
+     * Guaranteed detach before the FDO context is freed; idempotent with
+     * the ReleaseHardware detach and covers teardown paths that skip it.
+     * Every other resource is parented to the FDO and freed by KMDF.
      */
+    VusbBusCtlDetachFdo(fdoCtx);
 }
 
 static
@@ -297,9 +308,19 @@ VusbBusFdoPlugIn(
     slot->InUse      = TRUE;
     slot->SlotId     = slotId;
     slot->InstanceId = instance;
-    slot->Vid        = Req->Vid ? Req->Vid : VHID_DEFAULT_VID;
-    slot->Pid        = Req->Pid ? Req->Pid : VHID_DEFAULT_PID;
-    slot->Version    = Req->Version ? Req->Version : VHID_DEFAULT_REV;
+
+    /*
+     * v1 presents a fixed USB identity. The hardware IDs the INF matches
+     * (USB\VID_1209&PID_BEEF&REV_0100) are static, so the PDO MUST
+     * advertise the canonical VID/PID/REV regardless of what the caller
+     * requested: honoring caller-supplied values would build a PDO whose
+     * hardware ID no function driver binds, leaving the device stuck in
+     * an error state. The request's Vid/Pid/Version fields are reserved
+     * for a future dynamic-INF revision (see common/vhid_version.h).
+     */
+    slot->Vid        = VHID_DEFAULT_VID;
+    slot->Pid        = VHID_DEFAULT_PID;
+    slot->Version    = VHID_DEFAULT_REV;
     RtlCopyMemory(slot->Serial, Req->Serial, sizeof(slot->Serial));
 
     status = VusbBusPdoCreate(FdoCtx, slot, &pdoDevice);
